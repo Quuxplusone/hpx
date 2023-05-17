@@ -30,4 +30,17 @@ namespace hpx {
     }
 #endif
 
+#if defined(HPX_HAVE_P1144_STD_RELOCATE_AT)
+    using std::relocate_at;
+#else
+    template <typename T>
+    constexpr T* relocate_at(T* src, T* dst)
+        noexcept(std::is_nothrow_move_constructible_v<T>)
+    {
+        T *ret = ::new ((void*)dst) T(HPX_MOVE(*src));
+        dst->~T();
+        return ret;
+    }
+#endif
+
 }    // namespace hpx

@@ -38,6 +38,11 @@ namespace hpx::parallel::util {
         template <typename Category, typename Enable = void>
         struct move_n_helper;
 
+        template <typename Category, typename Enable = void>
+        struct uninitialized_relocate_helper;
+        template <typename Category, typename Enable = void>
+        struct uninitialized_relocate_n_helper;
+
         ///////////////////////////////////////////////////////////////////////
         template <typename T>
         HPX_FORCEINLINE std::enable_if_t<std::is_pointer_v<T>, char*> to_ptr(
@@ -348,4 +353,109 @@ namespace hpx::parallel::util {
                 std::decay_t<OutIter>>;
         return detail::move_n_helper<category>::call(first, count, dest);
     }
+
+    ///////////////////////////////////////////////////////////////////////////
+    namespace detail {
+
+        // Customization point for optimizing uninitialized_relocate operations
+        template <typename Category, typename Enable>
+        struct uninitialized_relocate_helper
+        {
+            template <typename InIter, typename Sent, typename OutIter>
+            HPX_FORCEINLINE static constexpr in_out_result<InIter, OutIter>
+            call(InIter first, Sent last, OutIter dest)
+            {
+                while (first != last)
+                {
+                    // TODO FIXME BUG HACK: add exception-safety
+                    auto *destp = std::addressof(*dest++);
+                    auto *firstp = std::addressof(*first++);
+                    hpx::relocate_at(firstp, destp);
+                }
+
+                return in_out_result<InIter, OutIter>{
+                    HPX_MOVE(first), HPX_MOVE(dest)};
+            }
+        };
+
+        template <typename Dummy>
+        struct uninitialized_relocate_helper<hpx::traits::trivially_copyable_pointer_tag, Dummy>
+        {
+            template <typename InIter, typename Sent, typename OutIter>
+            HPX_FORCEINLINE static in_out_result<InIter, OutIter> call(
+                InIter first, Sent last, OutIter dest) noexcept
+            {
+                return copy_memmove(
+                    first, parallel::detail::distance(first, last), dest);
+            }
+        };
+    }    // namespace detail
+
+    template <typename InIter, typename Sent, typename OutIter>
+    HPX_FORCEINLINE constexpr in_out_result<InIter, OutIter> uninitialized_relocate(
+        InIter first, Sent last, OutIter dest)
+    {
+        using category =
+            hpx::traits::pointer_relocate_category_t<std::decay_t<InIter>,
+                std::decay_t<OutIter>>;
+        return detail::relocate_helper<category>::call(first, last, dest);
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    namespace detail {
+
+        // Customization point for optimizing uninitialized_relocate_n operations
+        template <typename Category, typename Enable>
+        struct uninitialized_relocate_n_helper
+        {
+            template <typename InIter, typename OutIter>
+            HPX_FORCEINLINE static constexpr in_out_result<InIter, OutIter>
+            call(InIter first, std::size_t num, OutIter dest)
+            {
+                std::size_t count =
+                    num & static_cast<std::size_t>(-4);     // -V112
+                for (std::size_t i = 0; i < count; i += 4)  // -V112
+                {
+                    auto *destp = std::addressof(*dest);
+                    auto *firstp = std::addressof(*first);
+                    hpx::relocate_at(firstp+0, destp+0);
+                    hpx::relocate_at(firstp+1, destp+1);
+                    hpx::relocate_at(firstp+2, destp+2);
+                    hpx::relocate_at(firstp+3, destp+3);
+                    first += 4;
+                    dest += 4;
+                }
+                for (/**/; count < num; (void) ++first, ++dest, ++count)
+                {
+                    auto *destp = std::addressof(*dest);
+                    auto *firstp = std::addressof(*first);
+                    hpx::relocate_at(firstp, destp);
+                }
+                return in_out_result<InIter, OutIter>{
+                    HPX_MOVE(first), HPX_MOVE(dest)};
+            }
+        };
+
+        template <typename Dummy>
+        struct uninitialized_relocate_n_helper<hpx::traits::trivially_copyable_pointer_tag, Dummy>
+        {
+            template <typename InIter, typename OutIter>
+            HPX_FORCEINLINE static in_out_result<InIter, OutIter> call(
+                InIter first, std::size_t count, OutIter dest) noexcept
+            {
+                return copy_memmove(first, count, dest);
+            }
+        };
+    }    // namespace detail
+
+    template <typename InIter, typename OutIter>
+    HPX_FORCEINLINE constexpr in_out_result<InIter, OutIter> uninitialized_relocate_n(
+        InIter first, std::size_t count, OutIter dest)
+    {
+        using category =
+            hpx::traits::pointer_relocate_category_t<std::decay_t<InIter>,
+                std::decay_t<OutIter>>;
+        return detail::uninitialized_relocate_n_helper<category>::call(first, count, dest);
+    }
+
 }    // namespace hpx::parallel::util
